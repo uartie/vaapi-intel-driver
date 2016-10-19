@@ -12,6 +12,7 @@ AM_CPPFLAGS =								\
 	-DPTHREADS							\
 	-DVA_DRIVERS_PATH="\"$(LIBVA_DRIVERS_PATH)\""			\
 	-DTEST_VA_DRIVERS_PATH="\"$(abs_top_srcdir)/src/.libs\""	\
+	-DTEST_VA_DATA_PATH="\"$(abs_top_srcdir)/test/data\""		\
 	-std=c++11							\
 	$(NULL)
 
