@@ -22,7 +22,8 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "i965_internal_decl.h"
+// #include "i965_internal_decl.h"
+#include "i965_test_environment.h"
 #include "i965_test_image_utils.h"
 
 YUVImage::YUVImage()
@@ -138,10 +139,41 @@ void YUVImage::initSlices()
     for (size_t i(1); i < t->planes; ++i)
         t->offsets[i] = t->sizes[i - 1] + t->offsets[i - 1];
 
-    t->bytes.resize(t->sizes.sum());
+    t->bytes = std::valarray<uint8_t>(t->sizes.sum());
 
     t->initSlices();
 
     return t;
+}
+
+/*static*/ YUVImage::Shared YUVImage::create(const VAImage& image)
+{
+    Shared result = create(image.format.fourcc, image.width, image.height);
+
+    I965TestEnvironment& env = *I965TestEnvironment::instance();
+
+    uint8_t* data = NULL;
+    i965_MapBuffer(env, image.buf, (void**)&data);
+
+//     size_t p(0);
+    auto it(std::begin(result->bytes));
+    for (size_t i(0); i < image.num_planes; ++i) {
+        const size_t sw(image.pitches[i]);
+        const size_t rw(result->widths[i]);
+//         std::gslice slice(
+//             0, {result->heights[i], result->widths[i]}, {image.pitches[i], 1});
+//         result->plane(i) = std::valarray<uint8_t>(
+//             data + image.offsets[i],
+//             image.pitches[i] * result->heights[i])[slice];
+        const uint8_t *s = data + image.offsets[i];
+        for (size_t j(0); j < result->heights[i]; ++j) {
+            std::copy(s, s + rw, it);
+            s += sw;
+            it += rw;
+        }
+    }
+
+    i965_UnmapBuffer(env, image.buf);
+    return result;
 }
 

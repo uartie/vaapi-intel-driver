@@ -25,6 +25,7 @@
 #include "i965_jpeg_test_data.h"
 #include "i965_streamable.h"
 #include "i965_test_fixture.h"
+#include "test_utils.h"
 
 #include <numeric>
 #include <cstring>
@@ -102,15 +103,17 @@ protected:
         unsigned fourcc = VA_FOURCC(
             sFourcc[0], sFourcc[1], sFourcc[2], sFourcc[3]);
 
+        Timer t;
         input = creator->create(fourcc);
+        std::cout << "Setup : Create  " << t.elapsed<Timer::ms>() << " ms" << std::endl;
 
         ASSERT_PTR(input.get())
             << "Unhandled fourcc parameter '" << sFourcc << "'"
             << " = 0x" << std::hex << fourcc << std::dec;
 
-        ASSERT_EQ(fourcc, input->fourcc);
+        ASSERT_EQ(fourcc, input->image->fourcc);
 
-        RecordProperty("test_input", toString(*input));
+//         RecordProperty("test_input", toString(*input));
     }
 
     virtual void TearDown()
@@ -134,14 +137,16 @@ protected:
 
         if (std::get<0>(GetParam()).get())
             std::cout << "Creator: " << std::get<0>(GetParam()) << std::endl;
-        if (input.get())
-            std::cout << "Input  : " << input << std::endl;
+//         if (input.get())
+//             std::cout << "Input  : " << input << std::endl;
 
         JPEGEncodeTest::TearDown();
     }
 
     void Encode()
     {
+        Timer t;
+
         ASSERT_FALSE(surfaces.empty());
 
         ASSERT_NO_FAILURE(
@@ -152,6 +157,11 @@ protected:
             endPicture(context));
         ASSERT_NO_FAILURE(
             syncSurface(surfaces.front()));
+
+        std::cout << "Encode: Picture " << t.elapsed<Timer::ms>() << " ms" << std::endl;
+
+        t.reset();
+
         ASSERT_NO_FAILURE(
             VACodedBufferSegment *segment =
                 mapBuffer<VACodedBufferSegment>(coded));
@@ -170,6 +180,8 @@ protected:
 
         unmapBuffer(coded);
 
+        std::cout << "Encode: Map     " << t.elapsed<Timer::ms>() << " ms" << std::endl;
+
         // EOI JPEG Marker
         ASSERT_GE(output.size(), 2u);
         EXPECT_TRUE(
@@ -184,13 +196,15 @@ protected:
         attributes.front().flags = VA_SURFACE_ATTRIB_SETTABLE;
         attributes.front().type = VASurfaceAttribPixelFormat;
         attributes.front().value.type = VAGenericValueTypeInteger;
-        attributes.front().value.value.i = input->fourcc;
-        surfaces = createSurfaces(input->width(), input->height(),
-            input->format, 1, attributes);
+        attributes.front().value.value.i = input->image->fourcc;
+        surfaces = createSurfaces(input->image->width, input->image->height,
+            input->image->format, 1, attributes);
     }
 
     void CopyInputToSurface()
     {
+        Timer t;
+
         ASSERT_FALSE(surfaces.empty());
 
         VAImage image;
@@ -202,10 +216,10 @@ protected:
 
         RecordProperty("input_image", toString(image));
 
-        EXPECT_EQ(input->planes, image.num_planes);
+        EXPECT_EQ(input->image->planes, image.num_planes);
         EXPECT_GT(image.data_size, 0u);
-        EXPECT_EQ(input->width(), image.width);
-        EXPECT_EQ(input->height(), image.height);
+        EXPECT_EQ(input->image->width, image.width);
+        EXPECT_EQ(input->image->height, image.height);
         if (HasFailure()) {
             unmapBuffer(image.buf);
             destroyImage(image);
@@ -221,14 +235,17 @@ protected:
         std::memset(data, 0, image.data_size);
 
         for (size_t i(0); i < image.num_planes; ++i) {
-            size_t w = input->widths[i];
-            size_t h = input->heights[i];
+            size_t w = input->image->widths[i];
+            size_t h = input->image->heights[i];
 
             EXPECT_GE(image.pitches[i], w);
             if (HasFailure())
                 break;
 
-            const ByteData::value_type *source = input->plane(i);
+//             const ByteData::value_type *source = input->plane(i);
+            const std::valarray<uint8_t> vp = input->image->plane(i);
+            const std::vector<uint8_t> plane(std::begin(vp), std::end(vp));
+            const uint8_t *source = plane.data();
             uint8_t *dest = data + image.offsets[i];
             for (size_t r(0); r < h; ++r) {
                 std::memcpy(dest, source, w);
@@ -239,28 +256,29 @@ protected:
 
         unmapBuffer(image.buf);
         destroyImage(image);
+        std::cout << "Input : Map     " << t.elapsed<Timer::ms>() << " ms" << std::endl;
     }
 
     void SetUpConfig()
     {
         ASSERT_INVALID_ID(config);
         ConfigAttribs attributes(
-            1, {type:VAConfigAttribRTFormat, value:input->format});
+            1, {type:VAConfigAttribRTFormat, value:input->image->format});
         config = createConfig(profile, entrypoint, attributes);
     }
 
     void SetUpContext()
     {
         ASSERT_INVALID_ID(context);
-        context = createContext(config, input->width(),
-            input->height(), 0, surfaces);
+        context = createContext(config, input->image->width,
+            input->image->height, 0, surfaces);
     }
 
     void SetUpCodedBuffer()
     {
         ASSERT_INVALID_ID(coded);
-        unsigned size =
-            std::accumulate(input->sizes.begin(), input->sizes.end(), 8192u);
+        unsigned size = input->image->sizes.sum() + 8192u;
+//             std::accumulate(input->sizes.begin(), input->sizes.end(), 8192u);
         size *= 2;
         coded = createBuffer(context, VAEncCodedBufferType, size);
     }
@@ -332,12 +350,16 @@ protected:
 
     void VerifyOutput()
     {
-        TestInput::SharedConst expect = input->toOutputFourcc();
+        Timer t;
+        const YUVImage::SharedConst expect = input->toOutputImage();
         ASSERT_PTR(expect.get());
+
+        std::cout << "Decode: Convert " << t.elapsed<Timer::ms>() << " ms" << std::endl;
+        t.reset();
 
         ::JPEG::Decode::PictureData::SharedConst pd =
             ::JPEG::Decode::PictureData::make(
-                input->fourcc_output, output, input->width(), input->height());
+                expect->fourcc, output, expect->width, expect->height);
 
         ASSERT_NO_FAILURE(
             Surfaces osurfaces = createSurfaces(
@@ -393,30 +415,20 @@ protected:
         ASSERT_NO_FAILURE(endPicture(ocontext));
         ASSERT_NO_FAILURE(syncSurface(osurfaces.front()));
 
+        std::cout << "Decode: Picture " << t.elapsed<Timer::ms>() << " ms" << std::endl;
+        t.reset();
+
         VAImage image;
         ASSERT_NO_FAILURE(deriveImage(osurfaces.front(), image));
         ASSERT_EQ(expect->planes, image.num_planes);
         ASSERT_GT(image.data_size, 0u);
-        ASSERT_EQ(expect->width(), image.width);
-        ASSERT_EQ(expect->height(), image.height);
-        ASSERT_NO_FAILURE(uint8_t *data = mapBuffer<uint8_t>(image.buf));
+        ASSERT_EQ(expect->width, image.width);
+        ASSERT_EQ(expect->height, image.height);
+//         ASSERT_NO_FAILURE(uint8_t *data = mapBuffer<uint8_t>(image.buf));
 
-        for (size_t i(0); i < image.num_planes; ++i) {
-            ASSERT_GE(image.pitches[i], expect->widths[i]);
-            std::valarray<uint8_t> source(expect->plane(i), expect->sizes[i]);
-            std::gslice result_slice(0, {expect->heights[i], expect->widths[i]},
-                {image.pitches[i], 1});
-            std::valarray<uint8_t> result = std::valarray<uint8_t>(
-                data + image.offsets[i],
-                image.pitches[i] * expect->heights[i])[result_slice];
-            std::valarray<uint8_t> signs(1, result.size());
-            signs[result > source] = -1;
-            ASSERT_EQ(source.size(), result.size());
-            EXPECT_TRUE((source * signs - result * signs).max() <= 2)
-                << "Byte(s) mismatch in plane " << i;
-        }
+        YUVImage::Shared result = YUVImage::create(image);
 
-        unmapBuffer(image.buf);
+        std::cout << "Decode: Map     " << t.elapsed<Timer::ms>() << " ms" << std::endl;
 
         for (auto id : buffers)
             destroyBuffer(id);
@@ -425,6 +437,32 @@ protected:
         destroyContext(ocontext);
         destroyConfig(oconfig);
         destroySurfaces(osurfaces);
+
+        t.reset();
+
+        ASSERT_PTR(result.get());
+
+        ASSERT_TRUE( (result->widths == expect->widths).min() );
+        ASSERT_TRUE( (result->heights == expect->heights).min() );
+        ASSERT_TRUE( (result->offsets == expect->offsets).min() );
+        ASSERT_TRUE( (result->sizes == expect->sizes).min() );
+        ASSERT_EQ(expect->bytes.size(), result->bytes.size());
+
+        std::valarray<int16_t> rbytes(result->bytes.size());
+        std::copy(std::begin(result->bytes), std::end(result->bytes), std::begin(rbytes));
+        std::valarray<int16_t> ebytes(expect->bytes.size());
+        std::copy(std::begin(expect->bytes), std::end(expect->bytes), std::begin(ebytes));
+
+//         rbytes -= ebytes;
+
+        EXPECT_TRUE(std::abs(ebytes - rbytes).max() <= 2);
+        std::cout << "Decode: Compare " << t.elapsed<Timer::ms>() << " ms" << std::endl;
+
+//         std::valarray<uint8_t> signs(1, result->bytes.size());
+//         signs[result->bytes > expect->bytes] = -1;
+//         EXPECT_TRUE((expect->bytes * signs - result->bytes * signs).max() <= 2);
+
+
     }
 };
 

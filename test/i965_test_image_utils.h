@@ -38,10 +38,16 @@ public:
     typedef std::shared_ptr<const YUVImage> SharedConst;
 
     static Shared create(const unsigned, const unsigned, const unsigned);
+    static Shared create(const VAImage&);
 
     std::slice_array<uint8_t> y() { return bytes[slices[0]]; }
     std::slice_array<uint8_t> u() { return bytes[slices[1]]; }
     std::slice_array<uint8_t> v() { return bytes[slices[2]]; }
+
+    std::slice_array<uint8_t> plane(const unsigned i)
+    {
+        return bytes[std::slice(offsets[i], sizes[i], 1)];
+    }
 
     std::valarray<uint8_t>      bytes;
     unsigned                    width;
